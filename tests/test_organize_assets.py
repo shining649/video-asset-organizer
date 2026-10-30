@@ -51,16 +51,53 @@ class OrganizerTests(unittest.TestCase):
             self.organizer.run()
 
     def test_parse_dates(self):
-        for value in ("2024:02:29 12:30:00", "2024-02-29 12:30:00", "2024-02-29T12:30:00",
-                      "2024:02:29 12:30:00+0900", "2024-02-29T12:30:00+09:00",
-                      "2024-02-29T12:30:00Z"):
+        naive = dt.datetime(2024, 2, 29, 12, 30, 45)
+        jst = dt.timezone(dt.timedelta(hours=9))
+        negative_offset = dt.timezone(-dt.timedelta(hours=3, minutes=30))
+        cases = (
+            ("2024:02:29 12:30:45", naive),
+            ("2024-02-29 12:30:45", naive),
+            ("2024-02-29T12:30:45", naive),
+            ("2024:02:29 12:30:45+0900", naive.replace(tzinfo=jst)),
+            ("2024:02:29 12:30:45+09:00", naive.replace(tzinfo=jst)),
+            ("2024-02-29T12:30:45+09:00", naive.replace(tzinfo=jst)),
+            ("2024-02-29T12:30:45-03:30", naive.replace(tzinfo=negative_offset)),
+            ("2024-02-29T12:30:45Z", naive.replace(tzinfo=dt.timezone.utc)),
+        )
+        for value, expected in cases:
             with self.subTest(value=value):
                 parsed = self.organizer._parse_datetime(value)
-                self.assertEqual(parsed.date(), dt.date(2024, 2, 29))
-                self.assertEqual(parsed.hour, 12)
-        for value in (None, 123, "", "2023:02:29 12:30:00", "not a date"):
+                self.assertEqual(parsed, expected)
+                self.assertEqual(parsed.utcoffset(), expected.utcoffset())
+        for value in (None, 123, [], {}, "", "not a date", "0000:00:00 00:00:00",
+                      "2023:02:29 12:30:00", "2024:13:01 12:30:00", "2024:04:31 12:30:00",
+                      "2024:02:29 24:00:00", "2024:02:29 12:60:00", "2024:02:29 12:30:60",
+                      "2024-02-29T12:30:00+24:00"):
             with self.subTest(value=value):
                 self.assertIsNone(self.organizer._parse_datetime(value))
+
+    def test_timezone_metadata_uses_recorded_calendar_date_for_output(self):
+        dates = {"east.mov": "2024-03-01T00:15:00+14:00",
+                 "west.mov": "2024-03-01T23:45:00-12:00"}
+        for name in dates:
+            self.asset(name, name.encode())
+
+        def metadata(command, **kwargs):
+            name = Path(command[-1]).name
+            return subprocess.CompletedProcess(command, 0,
+                stdout=json.dumps([{"DateTimeOriginal": dates[name]}]))
+
+        self.organizer.dry_run = False
+        with patch("src.organize_assets.subprocess.run", side_effect=metadata):
+            self.organizer.run()
+        expected_dir = self.output / "2024" / "03" / "01"
+        self.assertEqual({p.name for p in expected_dir.iterdir()}, set(dates))
+        for name in dates:
+            self.assertEqual((expected_dir / name).read_bytes(), name.encode())
+            self.assertTrue((self.source / name).exists())
+        # UTC conversion would shift these into the previous/next day; mtime is Feb 29.
+        self.assertFalse(self.date_dir.exists())
+        self.assertFalse((self.output / "2024" / "03" / "02").exists())
 
     def test_metadata_priority_and_invalid_field_fallback(self):
         asset = self.asset()
@@ -121,6 +158,18 @@ class OrganizerTests(unittest.TestCase):
                 self.assertEqual(backup_path.exists(), use_backup)
                 if use_backup:
                     self.assertEqual(backup_path.read_bytes(), b"original")
+
+    def test_failed_backup_leaves_original_unmoved(self):
+        original = self.asset("nested/clip.mov")
+        self.organizer.dry_run = False
+        self.organizer.mode = "move"
+        with patch("src.organize_assets.shutil.copy2", side_effect=OSError("backup failed")), \
+             patch("src.organize_assets.shutil.move") as move:
+            with self.assertRaisesRegex(OSError, "backup failed"):
+                self.run_organizer()
+        move.assert_not_called()
+        self.assertEqual(original.read_bytes(), b"original")
+        self.assertFalse((self.date_dir / original.name).exists())
 
     def test_dry_run_preserves_files_and_creates_no_asset_directories(self):
         self.asset()
@@ -191,3 +240,4 @@ class OrganizerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

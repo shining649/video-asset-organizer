@@ -8,8 +8,10 @@ permissions:
 jobs:
   unittest:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Python 3.9 builds are available for Ubuntu 24.04, but not 26.04.
+        os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -17,3 +19,4 @@ jobs:
         with:
           python-version: '3.9'
       - run: python -m unittest discover -s tests -v
+
