@@ -47,6 +47,7 @@ class AssetOrganizer:
 
         moved = 0
         skipped = 0
+        planned_targets: set[Path] = set()
 
         for file_path in files:
             if self._should_skip(file_path):
@@ -55,13 +56,15 @@ class AssetOrganizer:
 
             file_date = self._resolve_date(file_path)
             target_dir = self.output_dir / f"{file_date:%Y}" / f"{file_date:%m}" / f"{file_date:%d}"
-            target_dir.mkdir(parents=True, exist_ok=True)
-            target_path = self._build_unique_path(target_dir / file_path.name)
+            target_path = self._build_unique_path(target_dir / file_path.name, planned_targets)
+            planned_targets.add(target_path)
 
             self.logger.info("plan: %s -> %s", file_path, target_path)
 
             if self.dry_run:
                 continue
+
+            target_dir.mkdir(parents=True, exist_ok=True)
 
             if self.mode == "move" and self.backup_dir:
                 backup_path = self.backup_dir / file_path.relative_to(self.source_dir)
@@ -138,8 +141,9 @@ class AssetOrganizer:
                 continue
         return None
 
-    def _build_unique_path(self, target_path: Path) -> Path:
-        if not target_path.exists():
+    def _build_unique_path(self, target_path: Path, reserved: Optional[set[Path]] = None) -> Path:
+        reserved = reserved if reserved is not None else set()
+        if not target_path.exists() and target_path not in reserved:
             return target_path
 
         stem = target_path.stem
@@ -149,7 +153,7 @@ class AssetOrganizer:
 
         while True:
             candidate = parent / f"{stem}_{counter:03d}{suffix}"
-            if not candidate.exists():
+            if not candidate.exists() and candidate not in reserved:
                 return candidate
             counter += 1
 
